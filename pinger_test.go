@@ -5,7 +5,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/gopyai/pinger"
+	"github.com/gopyai/go-pinger"
 )
 
 func Example() {

@@ -19,6 +19,7 @@ const (
 
 type (
 	PingResult struct {
+		Times          int
 		ReplyRatio     float64
 		LatencyAverage float64
 	}
@@ -251,6 +252,7 @@ func syncPingSummarize(rst []*PingResult, rstByIP []*byIP, times int) ([]*PingRe
 		if rip.times == 0 {
 			continue
 		}
+		r.Times = rip.times
 		r.ReplyRatio = float64(rip.times) / float64(times)
 		r.LatencyAverage = rip.latencySum / float64(rip.times)
 	}

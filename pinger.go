@@ -3,7 +3,6 @@ package pinger
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"net"
 	"os"
 	"sync"
@@ -25,6 +24,7 @@ type (
 	}
 
 	bySeq struct {
+		ip      net.IP
 		ipIdx   int       // set when start echo
 		echoAt  time.Time //
 		latency float64   // updated at each reply
@@ -47,8 +47,6 @@ var (
 		onReply map[int]func(seq int) // Map seq to callback function
 		seq     int
 	}
-
-	readBuffer = make([]byte, 1500)
 )
 
 func Start() error {
@@ -67,11 +65,12 @@ func bgReply() error {
 	//}
 
 	for {
-		seq, err := syncReplyRead()
-		if err != nil {
-			return err
+		if seq, e := syncReplyRead(); e == nil {
+			// Notes:
+			// So far the only identified error is the "destination unreachable".
+			// So it is safe to ignore the error.
+			syncReplyCall(seq)
 		}
-		syncReplyCall(seq)
 	}
 }
 
@@ -85,19 +84,20 @@ func Ping(pingList []net.IP, times int, durBetween, durLast time.Duration) ([]*P
 		rstByIP[ipIdx] = new(byIP)
 	}
 
-	done := make(chan bool, 2)
+	done := make(chan bool, 1)
 
 	for loop := 0; loop < times; loop++ {
 		for ipIdx, ip := range pingList {
 			err := syncPingEcho(ip,
-				func(seq int) { // On echo
-					rstBySeq[seq] = &bySeq{ipIdx: ipIdx, echoAt: time.Now()}
+				func(seq int, ip net.IP) { // On echo
+					rstBySeq[seq] = &bySeq{ip: ip, ipIdx: ipIdx, echoAt: time.Now()}
 				},
 				func(seq int) { // On reply
 					rs, ok := rstBySeq[seq]
 					if !ok {
 						return
 					}
+					//fmt.Println("Reply:", rs.ip)
 					rs.latency = time.Since(rs.echoAt).Seconds()
 
 					rip := rstByIP[rs.ipIdx]
@@ -106,7 +106,11 @@ func Ping(pingList []net.IP, times int, durBetween, durLast time.Duration) ([]*P
 
 					delete(rstBySeq, seq)
 					if len(rstBySeq) == 0 {
-						done <- true
+						select {
+						case done <- true:
+						default:
+							return
+						}
 					}
 				})
 			if err != nil {
@@ -160,8 +164,9 @@ func syncReplyRead() (seq int, err error) {
 		conn.Unlock()
 		return 0, ErrDisconnected
 	}
-	conn.Unlock()
+	conn.Unlock() // no need to defer because read should not concurrent
 
+	readBuffer := make([]byte, 1500)
 	n, peer, err := c.ReadFrom(readBuffer)
 	if err != nil {
 		//switch err.(type) {
@@ -183,7 +188,12 @@ func syncReplyRead() (seq int, err error) {
 	switch msg.Type {
 	case ipv4.ICMPTypeEchoReply:
 	default:
-		fmt.Println("error: Got", msg, "from", peer)
+		// Notes:
+		// So far the only identified error is the "destination unreachable".
+		// So it is safe to ignore the error.
+
+		//fmt.Println("error: Got", msg, "from", peer)
+		_ = peer
 		return 0, ErrParseReply
 	}
 
@@ -204,11 +214,11 @@ func syncReplyCall(seq int) {
 	}
 }
 
-func syncPingEcho(ip net.IP, onEcho, onReply func(seq int)) error {
+func syncPingEcho(ip net.IP, onEcho func(seq int, ip net.IP), onReply func(seq int)) error {
 	conn.Lock()
 	defer conn.Unlock()
 
-	onEcho(conn.seq)
+	onEcho(conn.seq, ip)
 	conn.onReply[conn.seq] = onReply
 
 	msg := icmp.Message{
@@ -258,9 +268,3 @@ func syncPingSummarize(rst []*PingResult, rstByIP []*byIP, times int) ([]*PingRe
 	}
 	return rst, nil
 }
-
-//func isErr(err error) {
-//	if err != nil {
-//		panic(err)
-//	}
-//}

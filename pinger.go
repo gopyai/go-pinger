@@ -3,6 +3,7 @@ package pinger
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"sync"
@@ -41,6 +42,8 @@ var (
 	ErrDisconnected = errors.New("error: No active connection")
 	ErrSendEcho     = errors.New("error: Failed to send ICMP echo message")
 
+	readBuffer = make([]byte, 1500)
+
 	conn struct {
 		sync.Mutex
 		*icmp.PacketConn
@@ -58,19 +61,19 @@ func Stop() {
 	syncConnDestroy()
 }
 
-func bgReply() error {
+func bgReply() {
 	//if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
 	//	stop()
 	//	return err
 	//}
 
 	for {
-		if seq, e := syncReplyRead(); e == nil {
-			// Notes:
-			// So far the only identified error is the "destination unreachable".
-			// So it is safe to ignore the error.
-			syncReplyCall(seq)
+		seq, e := syncReplyRead()
+		if e != nil {
+			fmt.Println(e)
+			continue
 		}
+		syncReplyCall(seq)
 	}
 }
 
@@ -166,8 +169,7 @@ func syncReplyRead() (seq int, err error) {
 	}
 	conn.Unlock() // no need to defer because read should not concurrent
 
-	readBuffer := make([]byte, 1500)
-	n, peer, err := c.ReadFrom(readBuffer)
+	n, _, err := c.ReadFrom(readBuffer)
 	if err != nil {
 		//switch err.(type) {
 		//case *net.OpError:
@@ -185,15 +187,8 @@ func syncReplyRead() (seq int, err error) {
 		return 0, err
 	}
 
-	switch msg.Type {
-	case ipv4.ICMPTypeEchoReply:
-	default:
-		// Notes:
-		// So far the only identified error is the "destination unreachable".
-		// So it is safe to ignore the error.
-
-		//fmt.Println("error: Got", msg, "from", peer)
-		_ = peer
+	if msg.Type != ipv4.ICMPTypeEchoReply {
+		// Not interested in other than ICMPTypeEchoReply message
 		return 0, ErrParseReply
 	}
 
